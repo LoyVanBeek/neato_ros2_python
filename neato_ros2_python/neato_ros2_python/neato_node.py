@@ -20,19 +20,21 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 import time
+from typing import List
 
 from geometry_msgs.msg import Quaternion, TransformStamped, Twist
 from nav_msgs.msg import Odometry
 import numpy as np
-from rcl_interfaces.msg import ParameterType
 import rclpy
-from rclpy.node import Node, ParameterDescriptor
+from rcl_interfaces.msg import ParameterType
+from rclpy.node import Node, Parameter, ParameterDescriptor, SetParametersResult
 from sensor_msgs.msg import LaserScan
-
 from std_msgs.msg import Header
 from tf2_ros.transform_broadcaster import TransformBroadcaster
 
 from .neato_driver import NeatoRobot
+
+lX, lY, lZ, rX, rY, rZ = 0, 1, 2, 3, 4, 5
 
 
 class NeatoNode(Node):
@@ -41,6 +43,10 @@ class NeatoNode(Node):
         super(NeatoNode, self).__init__('neato')
 
         self._robot = robot
+
+        self.declare_parameter('base_width', self._robot.base_width,
+                               ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE,
+                                                   description='How far are the wheels apart?'))
 
         self._scan_pub = self.create_publisher(LaserScan, 'scan', 1)
         self._odom_pub = self.create_publisher(Odometry, 'odom', 1)
@@ -62,9 +68,8 @@ class NeatoNode(Node):
         scan_link = self.get_parameter_or('frame_id').value
         self._scan = LaserScan(header=Header(frame_id=scan_link))
         self._scan.angle_min = 0.0
-        self._scan.angle_max = np.pi * 2
-        self._scan.angle_increment = (
-            self._scan.angle_max - self._scan.angle_min) / 360.0
+        self._scan.angle_increment = (np.pi * 2) / 360.0
+        self._scan.angle_max = (np.pi * 2) - self._scan.angle_increment
         self._scan.range_min = 0.020
         self._scan.range_max = 5.0
 
@@ -72,6 +77,20 @@ class NeatoNode(Node):
         self._encoders = [0, 0]
         self._odom = Odometry(header=Header(frame_id='odom'),
                               child_frame_id='base_footprint')
+
+        self._odom.pose.covariance[lX*6 + lX] = 0.01
+        self._odom.pose.covariance[lY*6 + lY] = 0.01
+        self._odom.pose.covariance[lZ*6 + lZ] = 0
+        self._odom.pose.covariance[rX*6 + rX] = 0
+        self._odom.pose.covariance[rY*6 + rY] = 0
+        self._odom.pose.covariance[rZ*6 + rZ] = 0.01
+
+        self._odom.twist.covariance[lX*6 + lX] = 0.02
+        # self._odom.twist.covariance[lY*6 + lY] = 0.0001
+        self._odom.twist.covariance[lZ*6 + lZ] = 0
+        # self._odom.twist.covariance[rX*6 + rX] = 0.1
+        # self._odom.twist.covariance[rY*6 + rY] = 0.1
+        self._odom.twist.covariance[rZ*6 + rZ] = 0.02
 
         self._bl_tf = TransformStamped(header=Header(frame_id='odom'),
                                        child_frame_id='base_footprint')
@@ -82,6 +101,9 @@ class NeatoNode(Node):
         self._bl_tf.transform.rotation.x = 0.0
         self._bl_tf.transform.rotation.y = 0.0
         self._bl_tf.transform.rotation.z = 0.0
+
+        self.get_logger().debug('Adding callback')
+        self.add_on_set_parameters_callback(self._handle_parameters)
 
     def _process_cmd_vel(self, twist: Twist):
         self.get_logger().debug('twist: {}'.format(twist))
@@ -174,6 +196,14 @@ class NeatoNode(Node):
         self._tf_broadcaster.sendTransform(self._bl_tf)
 
         self.get_logger().debug('tock')
+
+    def _handle_parameters(self, parameters: List[Parameter]):
+        for parameter in parameters:
+            if parameter.name == 'base_width':
+                self.get_logger().warn("Overriding robot's base_width: {}".format(parameter.value))
+                self._robot.base_width = parameter.value
+
+        return SetParametersResult(successful=True)
 
 
 def main(args=None):
